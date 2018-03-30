@@ -12,6 +12,8 @@
 #include <stdarg.h>
 #include "rpc.h"
 
+#define READ_CHUNK_SIZE 512
+
 #define command(name) \
 	msgpack_sbuffer hbuf;\
 	msgpack_sbuffer bbuf;\
@@ -27,7 +29,6 @@
 	msgpack_pack_str(&pk, 3);\
 	msgpack_pack_str_body(&pk, "Seq", 3);\
 	msgpack_pack_int(&pk, seq_time);\
-	msgpack_packer_free(&pk);\
 	msgpack_sbuffer_init(&bbuf);\
 	msgpack_packer_init(&pk, &bbuf, msgpack_sbuffer_write);
 
@@ -35,54 +36,140 @@
 	size_t len = hbuf.size + bbuf.size;\
 	char *buf = malloc(len);\
 	memcpy(buf, hbuf.data, hbuf.size);\
-	memcpy(buf, bbuf.data, bbuf.size);\
+	memcpy(buf + hbuf.size, bbuf.data, bbuf.size);\
 	rpc_call(buf, len, ret);\
+	free(buf);\
+}
+
+char*
+extract_string_from_map(msgpack_object *obj, const char* key)
+{
+	if(obj->type != MSGPACK_OBJECT_MAP)
+	{
+		return 0;
+	}
+
+	for (int ii = 0; ii < obj->via.map.size; ++ii)
+	{
+		msgpack_object currentKey = obj->via.map.ptr[ii].key;
+		msgpack_object currentVal = obj->via.map.ptr[ii].val;
+
+		assert(currentKey.type == MSGPACK_OBJECT_STR);
+
+		if (strncmp(currentKey.via.str.ptr, key, currentKey.via.str.size) == 0)
+		{
+			char* result = (char*) malloc(currentVal.via.str.size + 1);
+			strncpy(result, currentVal.via.str.ptr, currentVal.via.str.size);
+			result[currentVal.via.str.size] = 0;
+			return result;
+		}
+	}
+
+	return 0;
+}
+
+int
+handle_response(char *response, size_t response_len, msgpack_unpacked *ret)
+{
+	// deserialize header
+	msgpack_unpacked header;
+	size_t offset = 0;
+
+	msgpack_unpacked_init(&header);
+
+	if (msgpack_unpack_next(&header, response, response_len, &offset) != MSGPACK_UNPACK_SUCCESS)
+	{
+		fprintf(stderr, "Unable to deserialize response header\n");
+		return 1;
+	}
+
+	// validate header
+	msgpack_object header_obj = header.data;
+
+	char* error = extract_string_from_map(&header_obj, "Error");
+
+	if (error == 0)
+	{
+		fprintf(stderr, "Unexpected response header format\n");
+		msgpack_object_print(stderr, header_obj);
+		fprintf(stderr, "\n");
+		free(error);
+		return 1;
+	}
+
+	if (strlen(error) > 0)
+	{
+		fprintf(stderr, "RPC returned error: %s\n", error);
+		free(error);
+		return 1;
+	}
+
+	free(error);
+
+	// parse body
+	if (ret != 0)
+	{
+		msgpack_unpacked_init(ret);
+
+		if (msgpack_unpack_next(ret, response, response_len, &offset) != MSGPACK_UNPACK_SUCCESS)
+		{
+			fprintf(stderr, "Unable to deserialize response body\n");
+			return 1;
+		}
+	}
+
+	return 0;
 }
 
 static size_t
 rpc_call(char *buf, size_t len, msgpack_unpacked *ret)
 {
-	unsigned char *reply = 0;
-	unsigned char *t;
-	size_t n;
-
-	if(connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
-	{
-		perror("RPC connection error");
-		return 0;
-	}
-
-	n = write(sockfd, buf, len);
-	if(n <= 0)
+	// send request
+	ssize_t bytes_written = write(sockfd, buf, len);
+	if(bytes_written < 0)
 	{
 		perror("RPC write error");
 		return 0;
 	}
-	
-	n=0;
-	while(1)
+
+	// receive response
+	ssize_t bytes_read = 0;
+	ssize_t chunk_size = 0;
+	char *response = 0;
+	char *temp;
+
+	while (1)
 	{
-		t = realloc(reply, n+512);
-		if(!t)
+		temp = realloc(response, bytes_read + READ_CHUNK_SIZE);
+		if(!temp)
 		{
 			perror("memory allocation error");
 			return 0;
 		}
-		reply = t;
-		n = read(sockfd, reply, 512);
-		if(n<=0) break;
+		response = temp;
+
+		chunk_size = read(sockfd, response + bytes_read, READ_CHUNK_SIZE);
+
+		if(chunk_size < 0)
+		{
+			perror("RPC read error");
+			free(response);
+			return 0;
+		}
+
+		bytes_read += chunk_size;
+
+		if(chunk_size < READ_CHUNK_SIZE) break;
 	}
-	if(ret != 0)
-	{
-		msgpack_unpacked_init(ret);
-		msgpack_unpack_next(ret, buf, len, NULL);
-	}
-	free(buf);
-	return n;
+
+	// handle response
+	int resp_error = handle_response(response, bytes_read, ret);
+	free(response);
+	return resp_error ? 0 : bytes_read;
 }
 
 int
-serf_init(char *host, int port)
+RPC_init(char *host, int port)
 {
 	portno = port;
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -103,6 +190,13 @@ serf_init(char *host, int port)
 			(char *)&serv_addr.sin_addr.s_addr,
 			server->h_length);
 	serv_addr.sin_port = htons(portno);
+
+	if(connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
+	{
+		perror("RPC connection error");
+		return -1;
+	}
+
 	return 1;
 }
 
