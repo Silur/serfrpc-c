@@ -49,7 +49,7 @@ extract_string_from_map(msgpack_object *obj, const char* key)
 		return 0;
 	}
 
-	for (int ii = 0; ii < obj->via.map.size; ++ii)
+	for (unsigned int ii = 0; ii < obj->via.map.size; ++ii)
 	{
 		msgpack_object currentKey = obj->via.map.ptr[ii].key;
 		msgpack_object currentVal = obj->via.map.ptr[ii].val;
