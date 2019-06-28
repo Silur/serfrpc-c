@@ -479,6 +479,7 @@ void
 serf_leave()
 {
 	command("leave");
+	exec_rpc(0);
 }
 
 void
