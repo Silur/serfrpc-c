@@ -114,7 +114,7 @@ handle_response(char *response, size_t response_len, msgpack_unpacked *ret)
 		if (msgpack_unpack_next(ret, response, response_len, &offset) != MSGPACK_UNPACK_SUCCESS)
 		{
 			fprintf(stderr, "Unable to deserialize response body\n");
-			return 1;
+            return 1;
 		}
 	}
 
@@ -441,7 +441,7 @@ void
 serf_stream(char *type, void (*cb)(msgpack_unpacked r))
 {
 	command("stream");
-	msgpack_pack_map(&pk, 2);
+	msgpack_pack_map(&pk, 1);
 	msgpack_pack_str(&pk, 4);
 	msgpack_pack_str_body(&pk, "Type", 4);
 	msgpack_pack_str(&pk, strlen(type));
@@ -449,7 +449,6 @@ serf_stream(char *type, void (*cb)(msgpack_unpacked r))
 	
 	msgpack_unpacked reply;
 	exec_rpc(&reply);
-
 	cb(reply);
 }
 
@@ -458,8 +457,8 @@ serf_monitor(char *loglevel)
 {
 	command("monitor");
 	msgpack_pack_map(&pk, 1);
-	msgpack_pack_str(&pk, 7);
-	msgpack_pack_str_body(&pk, "LogLevel", 7);
+	msgpack_pack_str(&pk, 8);
+	msgpack_pack_str_body(&pk, "LogLevel", 8);
 	msgpack_pack_str(&pk, strlen(loglevel));
 	msgpack_pack_str_body(&pk, loglevel, strlen(loglevel));
 	exec_rpc(0);
@@ -480,6 +479,7 @@ void
 serf_leave()
 {
 	command("leave");
+	exec_rpc(0);
 }
 
 void
